@@ -75,6 +75,17 @@ h3 { margin: 0; font: 600 0.8rem var(--ui); letter-spacing: 0.06em; text-transfo
 .src b { display: block; font: 600 0.9rem var(--ui); }
 .src:has(input:checked) b { color: var(--gold); }
 .src .d { display: block; font-size: 0.8rem; color: var(--dim); line-height: 1.35; }
+.src:has(input:indeterminate) { border-color: rgba(255, 213, 74, 0.3); }
+.src .cnt { font: 0.72rem var(--ui); color: var(--dim); margin-left: 6px; }
+.mgroup details { margin: 0 0 4px 30px; }
+.mgroup summary { font-size: 0.8rem; color: var(--link); cursor: pointer; width: fit-content; }
+.mitems { display: grid; gap: 1px; max-height: 240px; overflow-y: auto; padding: 4px 2px; }
+.mitem { display: flex; gap: 6px; align-items: center; font-size: 0.84rem; padding: 1px 4px; border-radius: 4px; cursor: pointer; }
+.mitem:hover { background: var(--raised); }
+.mitem input { accent-color: var(--gold); }
+.mitem:has(input:not(:checked)) span { color: var(--dim); text-decoration: line-through; }
+.mitem .use { font: 600 0.66rem var(--ui); color: var(--gold); margin-left: auto; white-space: nowrap; text-decoration: none; }
+#mfilter { width: 100%; }
 .chk { display: flex; gap: 8px; align-items: start; cursor: pointer; font-size: 0.88rem; }
 .chk input { accent-color: var(--gold); margin-top: 3px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -149,18 +160,11 @@ a.l:hover, a.l.open { background: var(--hover); }
 
   <div class="grid">
     <aside class="box sticky" aria-label="Setup">
-      <h2>Where your materials come from</h2>
-      <p class="note">Each choice adds to the one above it. The route only uses materials you can get this way.</p>
-      <div class="srcs" role="radiogroup" aria-label="Where your materials come from">
-        <label class="src" for="src-v"><input type="radio" name="src" id="src-v" value="v">
-          <span><b>Vendor only</b><span class="d">Only what NPC vendors sell: thread, molds, vials, spices, schematics. Vendors don't sell ore, wood or hides, so most routes stop early.</span></span></label>
-        <label class="src" for="src-vg"><input type="radio" name="src" id="src-vg" value="vg" checked>
-          <span><b>+ Harvest</b><span class="d">Also what you gather yourself: ore (Mining), wood (Lumberjacking), stone, fish, herbs.</span></span></label>
-        <label class="src" for="src-vgd"><input type="radio" name="src" id="src-vgd" value="vgd">
-          <span><b>+ Mob drops</b><span class="d">Also what monsters drop: pelts, rawhide, hide, leather and cloth scraps, spider silk, gems, corroded gear.</span></span></label>
-        <label class="src" for="src-all"><input type="radio" name="src" id="src-all" value="all">
-          <span><b>+ Enchanter</b><span class="d">Also enchanting materials: magic powders and motes (from Disenchanting) and anything Enchanted (bars, cloth, hide). You need an enchanter: yourself or another player.</span></span></label>
-      </div>
+      <h2>Materials you can get</h2>
+      <p class="note">Everything is assumed available. Untick what you can't get or don't want to use (a whole group or single items) and the route is rebuilt from what's left. An unticked item can still be made from its parts in a ticked profession.</p>
+      <input type="search" id="mfilter" placeholder="Filter materials, e.g. ore" aria-label="Filter materials" autocomplete="off">
+      <div class="srcs" id="mats"></div>
+      <div class="row"><button class="mini" id="mall" type="button">tick all</button><button class="mini" id="mnone" type="button">untick all</button></div>
       <h2>Professions</h2>
       <div class="profhead" aria-hidden="true"><span></span><span></span><span>now</span><span></span><span>goal</span></div>
       <div class="profs" id="profs"></div>
@@ -266,12 +270,34 @@ function sourcesOf(n) {
   return s;
 }
 
+// ---------- materials the viewer can get, in groups by where they come from
+const GROUPS = [
+  { g: "vendor", name: "Vendor", d: "What NPC vendors sell: thread, molds, vials, spices." },
+  { g: "gather", name: "Harvest", d: "What you gather yourself: ore (Mining), wood (Lumberjacking), stone, fish, herbs." },
+  { g: "drop", name: "Mob drops", d: "What monsters drop: pelts, rawhide, hide, leather and cloth scraps, spider silk, gems, corroded gear." },
+  { g: "ench", name: "Enchanter", d: "Magic powders and motes (from Disenchanting) and anything Enchanted. You need an enchanter: yourself or another player." },
+  { g: "made", name: "Parts other crafters make", d: "Bars, canvases, straps and other parts from a profession you didn't tick: bought from a player." },
+];
+function groupOf(n) {
+  const s = sourcesOf(n);
+  if (byResult.has(low(n)) && s.has("drop") && s.size === 1) return "made";
+  return s.has("ench") ? "ench" : s.has("vendor") ? "vendor" : s.has("gather") ? "gather" : "drop";
+}
+// Every material the ticked professions' recipes can use, down through the parts they're made from
+function materialsFor(skills) {
+  const seen = new Map(), todo = [];
+  const visit = n => { const k = low(n); if (seen.has(k) || TOOLS.test(n)) return; seen.set(k, n); todo.push(k); };
+  for (const r of R) if (skills.has(r.skill) && !isBreakdown(r)) for (const [n] of r.comps) visit(n);
+  while (todo.length) for (const r of byResult.get(todo.pop()) || []) for (const [n] of r.comps) visit(n);
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
 // ---------- the planner: cheapest recipe per skill point, professions leveled together
 function makePlanner(opt) {
-  const allowedSrc = new Set({ v: ["vendor"], vg: ["vendor", "gather"], vgd: ["vendor", "gather", "drop"], all: ["vendor", "gather", "drop", "ench"] }[opt.src]);
   const allow = () => true;   // R holds only learnable recipes
-  const makerOk = r => (allowedSrc.has("ench") || (r.skill !== "Enchanting" && r.skill !== "Disenchanting")) && allow(r);
-  const materialOk = n => [...sourcesOf(n)].some(x => allowedSrc.has(x));
+  const makerOk = r => allow(r);
+  // The viewer can get everything they haven't unticked; an unticked item is never bought, gathered or looted
+  const canGet = n => !opt.off.has(low(n));
   const memo = new Map();
   const add = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
 
@@ -299,10 +325,10 @@ function makePlanner(opt) {
     };
     // Buy it or make it, whichever is cheaper; a tie goes to making it (that may level a ticked profession)
     const made = makers.length ? tryMake(makers) : null;
-    const bought = price !== null ? { coin: price, base: new Map(), buy: new Map([[n, 1]]), crafts: new Map(), blocked: false } : null;
+    const bought = price !== null && canGet(n) ? { coin: price, base: new Map(), buy: new Map([[n, 1]]), crafts: new Map(), blocked: false } : null;
     if (made && !made.blocked && (!bought || score(made) <= score(bought))) res = made;
     else if (bought) res = bought;
-    else if (materialOk(n)) res = { coin: 0, base: new Map([[n, 1]]), buy: new Map(), crafts: new Map(), blocked: false };
+    else if (canGet(n)) res = { coin: 0, base: new Map([[n, 1]]), buy: new Map(), crafts: new Map(), blocked: false };
     else res = { coin: 0, base: new Map([[n, 1]]), buy: new Map(), crafts: new Map(), blocked: true };
     if (!busy.size) memo.set(key, res);
     return res;
@@ -402,10 +428,10 @@ const topTriv = skill => Math.max(0, ...R.filter(r => r.skill === skill && r.tri
 const SKILLS = D.skills.filter(s => R.some(r => r.skill === s && r.triv !== null)).map(skill => ({ skill, top: topTriv(skill) }));
 const CAP = 300;
 // An example to start from (two professions that feed each other); everything is the viewer's to change
-let state = { selected: ["Smelting", "Blacksmithing"], levels: {}, targets: {}, src: "vg", cpp: 2, window: 30, unknownCp: 100,
+let state = { selected: ["Smelting", "Blacksmithing"], levels: {}, targets: {}, off: [], cpp: 2, window: 30, unknownCp: 100,
   prices: [{ item: "Rawhide Scraps", cp: 10, note: "a stack of 20 for 2 sp at a vendor" }, { item: "Cracked * Mold", cp: 100, note: "weapon molds: at least 1 sp each" },
            { item: "Crude Ingot Mold", cp: 3, note: "estimate: the smelter's Sturdy Ingot Mold is 5 cp" }] };
-try { const s = JSON.parse(localStorage.getItem("tsroute-public") || "null"); if (s && Array.isArray(s.selected)) state = { ...state, ...s }; } catch {}
+try { const s = JSON.parse(localStorage.getItem("tsroute-public") || "null"); if (s && Array.isArray(s.selected)) { delete s.src; state = { ...state, ...s }; } } catch {}
 const save = () => { try { localStorage.setItem("tsroute-public", JSON.stringify(state)); } catch {} };
 const levelOf = skill => Math.max(0, Math.min(CAP, +(state.levels[skill] ?? 0) || 0));
 const targetOf = skill => Math.max(levelOf(skill), Math.min(CAP, +(state.targets[skill] ?? topTriv(skill)) || 0));
@@ -419,7 +445,7 @@ function renderSetup() {
       <span class="arrow">→</span>
       <input type="number" id="${id}-goal" aria-label="${esc(s.skill)}: skill to reach" data-t="${esc(s.skill)}" min="0" max="${CAP}" value="${targetOf(s.skill)}" title="Highest trivial on the wiki: ${s.top}"></div>`;
   }).join("");
-  document.querySelector(`input[name="src"][value="${state.src}"]`).checked = true;
+  renderMats();
   document.getElementById("prices").innerHTML = state.prices.map((p, i) => `<div class="price">
       <input type="text" id="pi-${i}" aria-label="Item (use * for any text)" data-pi="${i}" value="${esc(p.item)}">
       <input type="number" id="pc-${i}" aria-label="Copper per item" data-pc="${i}" min="0" value="${p.cp}">
@@ -428,6 +454,33 @@ function renderSetup() {
   document.getElementById("unk").value = state.unknownCp;
   document.getElementById("cpp").value = state.cpp;
   document.getElementById("win").value = state.window;
+}
+
+let matFilter = "";
+const matId = new Map();   // material -> a stable element id
+const midOf = n => { const k = low(n); if (!matId.has(k)) matId.set(k, "m-" + matId.size); return matId.get(k); };
+function renderMats() {
+  const el = document.getElementById("mats");
+  const open = new Set([...el.querySelectorAll("details[open]")].map(d => d.dataset.g));
+  const focus = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
+  const off = new Set(state.off), used = new Set();
+  if (last) for (const st of last.stages) for (const m of [st.b.base, st.b.buy]) for (const n of m.keys()) used.add(low(n));
+  const mats = materialsFor(new Set(state.selected));
+  const f = low(matFilter.trim());
+  el.innerHTML = GROUPS.map(G => {
+    const all = mats.filter(n => groupOf(n) === G.g);
+    if (!all.length) return "";
+    const items = all.filter(n => !f || low(n).includes(f)).sort((a, b) => used.has(low(b)) - used.has(low(a)) || a.localeCompare(b));
+    const on = all.filter(n => !off.has(low(n))).length;
+    return `<div class="mgroup"><label class="src" for="g-${G.g}"><input type="checkbox" id="g-${G.g}" data-g="${G.g}"${on ? " checked" : ""}${on && on < all.length ? ' data-ind="1"' : ""}>
+        <span><b>${esc(G.name)}<span class="cnt">${on} of ${all.length}</span></b><span class="d">${esc(G.d)}</span></span></label>
+      ${items.length ? `<details data-g="${G.g}"${open.has(G.g) || f ? " open" : ""}><summary>${f ? `${items.length} matching` : "pick items"}</summary><div class="mitems">${items.map(n => {
+        const id = midOf(n);
+        return `<label class="mitem" for="${id}"><input type="checkbox" id="${id}" data-m="${esc(n)}"${off.has(low(n)) ? "" : " checked"}><span>${esc(n)}</span>${used.has(low(n)) ? '<span class="use">in route</span>' : ""}</label>`;
+      }).join("")}</div></details>` : ""}</div>`;
+  }).join("") || `<div class="empty small">Tick a profession to see its materials.</div>`;
+  for (const i of el.querySelectorAll("input[data-ind]")) i.indeterminate = true;
+  if (focus) document.getElementById(focus)?.focus();
 }
 
 // ---------- links and cards
@@ -510,7 +563,7 @@ function plan() {
   const selected = new Set(state.selected.filter(s => SKILLS.some(k => k.skill === s)));
   const levels = {}, targets = {};
   for (const s of SKILLS) { levels[s.skill] = levelOf(s.skill); targets[s.skill] = targetOf(s.skill); }
-  P = makePlanner({ src: state.src, cpp: Math.max(1, +state.cpp || 2), window: Math.max(5, +state.window || 30), selected, levels, targets });
+  P = makePlanner({ off: new Set(state.off), cpp: Math.max(1, +state.cpp || 2), window: Math.max(5, +state.window || 30), selected, levels, targets });
   const t0 = performance.now();
   const { stages, level } = P.route();
   last = { stages, level, selected, levels, targets, ms: performance.now() - t0 };
@@ -523,11 +576,11 @@ function renderRoute() {
   sum.innerHTML = [...selected].map(s => {
     const from = levels[s], to = Math.floor(level[s] ?? from), tgt = targets[s], done = to >= tgt;
     const pct = tgt > from ? Math.min(100, (to - from) / (tgt - from) * 100) : 100;
-    return `<div class="skillres"><b>${esc(s)}</b><span class="num small">${from} → ${to} <span class="dim">of ${tgt}</span></span><div class="bar"><i class="${done ? "" : "part"}" style="width:${pct}%"></i></div>${done ? "" : `<span class="small short">${R.some(r => r.skill === s && r.triv !== null && r.triv > to) ? `stops at ${to}: no recipe fits these material options` : `stops at ${to}: no learnable recipes past here yet (schematic sellers not recorded)`}</span>`}</div>`;
+    return `<div class="skillres"><b>${esc(s)}</b><span class="num small">${from} → ${to} <span class="dim">of ${tgt}</span></span><div class="bar"><i class="${done ? "" : "part"}" style="width:${pct}%"></i></div>${done ? "" : `<span class="small short">${R.some(r => r.skill === s && r.triv !== null && r.triv > to) ? `stops at ${to}: no recipe fits the materials you can get` : `stops at ${to}: no learnable recipes past here yet (schematic sellers not recorded)`}</span>`}</div>`;
   }).join("");
 
   const stagesEl = document.getElementById("stages");
-  if (!stages.length) { stagesEl.innerHTML = `<div class="empty">No route with these options. Allow more material sources on the left.</div>`; }
+  if (!stages.length) { stagesEl.innerHTML = `<div class="empty">No route with these options. Tick more materials on the left.</div>`; }
   else stagesEl.innerHTML = stages.map((st, i) => {
     const n = Math.ceil(st.combines);
     // The parts this stage needs, in the order you make them: anything another part is made from comes first
@@ -587,15 +640,19 @@ function renderRoute() {
     + table("Enchanter materials", enchM, "drop", "These need Enchanting or Disenchanting.");
 }
 
-function refresh() { save(); plan(); renderRoute(); renderCard(); }
+function refresh() { save(); plan(); renderRoute(); renderCard(); renderMats(); }
 
 // ---------- events
 document.addEventListener("change", e => {
   const t = e.target;
   if (t.matches(".prof input[type=checkbox]")) { const s = t.dataset.s; state.selected = t.checked ? [...new Set([...state.selected, s])] : state.selected.filter(x => x !== s); t.closest(".prof").classList.toggle("off", !t.checked); }
+  else if (t.dataset.m) { const k = low(t.dataset.m); state.off = t.checked ? state.off.filter(x => x !== k) : [...new Set([...state.off, k])]; }
+  else if (t.dataset.g) {
+    const names = new Set(materialsFor(new Set(state.selected)).filter(n => groupOf(n) === t.dataset.g).map(low));
+    state.off = t.checked ? state.off.filter(x => !names.has(x)) : [...new Set([...state.off, ...names])];
+  }
   else if (t.dataset.l) state.levels[t.dataset.l] = +t.value;
   else if (t.dataset.t) state.targets[t.dataset.t] = +t.value;
-  else if (t.name === "src") state.src = t.value;
   else if (t.id === "cpp") state.cpp = +t.value;
   else if (t.dataset.pi !== undefined) { state.prices[+t.dataset.pi].item = t.value; state.prices[+t.dataset.pi].note = ""; }
   else if (t.dataset.pc !== undefined) state.prices[+t.dataset.pc].cp = +t.value;
@@ -620,6 +677,8 @@ document.addEventListener("click", e => {
     if (window.innerWidth <= 1280) document.getElementById("card").scrollIntoView({ block: "nearest" });
     return;
   }
+  if (e.target.id === "mall") { state.off = []; refresh(); return; }
+  if (e.target.id === "mnone") { state.off = [...new Set([...state.off, ...materialsFor(new Set(state.selected)).map(low)])]; refresh(); return; }
   if (e.target.id === "addprice") { state.prices.push({ item: "", cp: 0, note: "" }); renderSetup(); document.getElementById(`pi-${state.prices.length - 1}`)?.focus(); return; }
   if (e.target.dataset.px !== undefined) { state.prices.splice(+e.target.dataset.px, 1); renderSetup(); refresh(); return; }
   const tab = e.target.closest(".tabs button");
@@ -628,6 +687,8 @@ document.addEventListener("click", e => {
     return;
   }
 });
+
+document.addEventListener("input", e => { if (e.target.id === "mfilter") { matFilter = e.target.value; renderMats(); } });
 
 const allNames = new Map();
 for (const r of R) { allNames.set(low(r.result), r.result); for (const [n] of r.comps) if (!allNames.has(low(n))) allNames.set(low(n), n); }
