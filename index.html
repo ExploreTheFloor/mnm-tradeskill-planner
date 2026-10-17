@@ -200,7 +200,9 @@ const TOOLS = /pliers|hammer|kit$|seam ripper|rivet cutters/i;
 const MAGIC = /^(enchanted|magic|arcane|astral|planar) powder$|^(mote|glimmer|spark|echo|vessel) of magic$|crystallized magic/i;
 const GATHERED = /\b(ore|wood|log|stone|limestone|coal|resin|sap|salt|fish|whitefish|grouper|basa|pike|sturgeon|salmon|angelfish|crab)\b/i;
 const NODE = /\b(vein|node|tree|deposit|bush|patch|plant|fishing|pool|school|stump|outcrop|boulder)\b/i;
-const GATHER_CP = 5;
+// What getting one item yourself is worth, by how you get it: harvesting is quick, hunting the right mob takes longer,
+// and enchanter materials need an enchanter. A tie between recipes goes to the one that avoids hunting.
+const EFFORT_CP = { gather: 5, drop: 10, ench: 15 };
 
 // ---------- data indexes
 const ALL = D.recipes.map(([skill, section, result, qty, trivial, comps, notes], i) => {
@@ -306,7 +308,12 @@ function makePlanner(opt) {
     return res;
   }
   function scale(m, f) { const o = new Map(); for (const [k, v] of m) o.set(k, v * f); return o; }
-  function score(b) { let g = 0; for (const v of b.base.values()) g += v; return b.coin + GATHER_CP * g; }
+  const effortMemo = new Map();
+  const effort = n => {
+    if (!effortMemo.has(n)) { const s = sourcesOf(n); effortMemo.set(n, s.has("gather") ? EFFORT_CP.gather : s.has("ench") ? EFFORT_CP.ench : EFFORT_CP.drop); }
+    return effortMemo.get(n);
+  };
+  function score(b) { let g = 0; for (const [n, v] of b.base) g += v * effort(n); return b.coin + g; }
   function recipeBill(r, busy) {
     const out = { coin: 0, base: new Map(), buy: new Map(), crafts: new Map(), blocked: false };
     for (const [n, q] of r.comps) {
