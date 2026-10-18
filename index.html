@@ -170,6 +170,13 @@ a.l:hover, a.l.open { background: var(--hover); }
       <div class="profhead" aria-hidden="true"><span></span><span></span><span>now</span><span></span><span>goal</span></div>
       <div class="profs" id="profs"></div>
       <p class="note">Each leveling step is a recipe known to exist: its schematic or pattern has a known seller, the game has shown it, or its profession has no schematics. A part whose schematic seller isn't known yet is made only when another recipe needs it, marked <span class="tag t-unk">learning unknown</span>.</p>
+      <h3>Recipes to use</h3>
+      <div class="srcs" role="radiogroup" aria-label="Recipes to use">
+        <label class="src" for="rec-exist"><input type="radio" name="rec" id="rec-exist" value="exist" checked>
+          <span><b>Every recipe known to exist</b><span class="d">Recipes with a schematic or pattern seller, recipes the game is known to give, and recipes in professions without schematics.</span></span></label>
+        <label class="src" for="rec-vendor"><input type="radio" name="rec" id="rec-vendor" value="vendor">
+          <span><b>Vendor schematics only</b><span class="d">Only recipes whose schematic or pattern a vendor sells, plus the starting recipes the game gives. Parts no vendor teaches are bought instead of made. Professions without schematics (Smelting, Tanning, Cooking…) keep all their recipes.</span></span></label>
+      </div>
       <h3>Prices you know</h3>
       <p class="note">These win over prices seen at vendors. Use * for any text, e.g. "Cracked * Mold". Copper per item.</p>
       <div class="prices" id="prices"></div>
@@ -299,7 +306,8 @@ function materialsFor(skills) {
 
 // ---------- the planner: cheapest recipe per skill point, professions leveled together
 function makePlanner(opt) {
-  const allow = () => true;   // R holds only learnable recipes
+  // R holds only learnable recipes; "vendor schematics only" keeps those a vendor teaches (or the game gives at the start)
+  const allow = r => !opt.vendorOnly || r.seen || buyable(r.result) || !usesSchem(r.skill);
   const makerOk = r => allow(r);
   // The viewer can get everything they haven't unticked; an unticked item is never bought, gathered or looted
   const canGet = n => !opt.off.has(low(n));
@@ -433,7 +441,7 @@ const topTriv = skill => Math.max(0, ...R.filter(r => r.skill === skill && r.tri
 const SKILLS = D.skills.filter(s => R.some(r => r.skill === s && r.triv !== null)).map(skill => ({ skill, top: topTriv(skill) }));
 const CAP = 300;
 // An example to start from (two professions that feed each other); everything is the viewer's to change
-let state = { selected: ["Smelting", "Blacksmithing"], levels: {}, targets: {}, off: [], cpp: 2, window: 30, unknownCp: 100,
+let state = { selected: ["Smelting", "Blacksmithing"], levels: {}, targets: {}, off: [], recipes: "exist", cpp: 2, window: 30, unknownCp: 100,
   prices: [{ item: "Rawhide Scraps", cp: 10, note: "a stack of 20 for 2 sp at a vendor" }, { item: "Cracked * Mold", cp: 100, note: "weapon molds: at least 1 sp each" },
            { item: "Crude Ingot Mold", cp: 3, note: "estimate: the smelter's Sturdy Ingot Mold is 5 cp" }] };
 try { const s = JSON.parse(localStorage.getItem("tsroute-public") || "null"); if (s && Array.isArray(s.selected)) { delete s.src; state = { ...state, ...s }; } } catch {}
@@ -451,6 +459,7 @@ function renderSetup() {
       <input type="number" id="${id}-goal" aria-label="${esc(s.skill)}: skill to reach" data-t="${esc(s.skill)}" min="0" max="${CAP}" value="${targetOf(s.skill)}" title="Highest trivial on the wiki: ${s.top}"></div>`;
   }).join("");
   renderMats();
+  document.querySelector(`input[name="rec"][value="${state.recipes === "vendor" ? "vendor" : "exist"}"]`).checked = true;
   document.getElementById("prices").innerHTML = state.prices.map((p, i) => `<div class="price">
       <input type="text" id="pi-${i}" aria-label="Item (use * for any text)" data-pi="${i}" value="${esc(p.item)}">
       <input type="number" id="pc-${i}" aria-label="Copper per item" data-pc="${i}" min="0" value="${p.cp}">
@@ -570,7 +579,7 @@ function plan() {
   const selected = new Set(state.selected.filter(s => SKILLS.some(k => k.skill === s)));
   const levels = {}, targets = {};
   for (const s of SKILLS) { levels[s.skill] = levelOf(s.skill); targets[s.skill] = targetOf(s.skill); }
-  P = makePlanner({ off: new Set(state.off), cpp: Math.max(1, +state.cpp || 2), window: Math.max(5, +state.window || 30), selected, levels, targets });
+  P = makePlanner({ off: new Set(state.off), vendorOnly: state.recipes === "vendor", cpp: Math.max(1, +state.cpp || 2), window: Math.max(5, +state.window || 30), selected, levels, targets });
   const t0 = performance.now();
   const { stages, level } = P.route();
   last = { stages, level, selected, levels, targets, ms: performance.now() - t0 };
@@ -583,7 +592,7 @@ function renderRoute() {
   sum.innerHTML = [...selected].map(s => {
     const from = levels[s], to = Math.floor(level[s] ?? from), tgt = targets[s], done = to >= tgt;
     const pct = tgt > from ? Math.min(100, (to - from) / (tgt - from) * 100) : 100;
-    return `<div class="skillres"><b>${esc(s)}</b><span class="num small">${from} → ${to} <span class="dim">of ${tgt}</span></span><div class="bar"><i class="${done ? "" : "part"}" style="width:${pct}%"></i></div>${done ? "" : `<span class="small short">${R.some(r => r.skill === s && r.triv !== null && r.triv > to) ? `stops at ${to}: no recipe fits the materials you can get` : `stops at ${to}: no learnable recipes past here yet (schematic sellers not recorded)`}</span>`}</div>`;
+    return `<div class="skillres"><b>${esc(s)}</b><span class="num small">${from} → ${to} <span class="dim">of ${tgt}</span></span><div class="bar"><i class="${done ? "" : "part"}" style="width:${pct}%"></i></div>${done ? "" : `<span class="small short">${R.some(r => r.skill === s && r.triv !== null && r.triv > to) ? `stops at ${to}: no recipe fits the materials and recipes you chose` : `stops at ${to}: no learnable recipes past here yet (schematic sellers not recorded)`}</span>`}</div>`;
   }).join("");
 
   const stagesEl = document.getElementById("stages");
@@ -661,6 +670,7 @@ document.addEventListener("change", e => {
   }
   else if (t.dataset.l) state.levels[t.dataset.l] = +t.value;
   else if (t.dataset.t) state.targets[t.dataset.t] = +t.value;
+  else if (t.name === "rec") state.recipes = t.value;
   else if (t.id === "cpp") state.cpp = +t.value;
   else if (t.dataset.pi !== undefined) { state.prices[+t.dataset.pi].item = t.value; state.prices[+t.dataset.pi].note = ""; }
   else if (t.dataset.pc !== undefined) state.prices[+t.dataset.pc].cp = +t.value;
